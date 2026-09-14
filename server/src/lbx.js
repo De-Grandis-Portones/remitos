@@ -640,9 +640,16 @@ function smallRefText(label) {
   const nvMatch = nvRaw.match(/\d+/);
   const nv = nvMatch ? nvMatch[0] : nvRaw;
   const ref = clean(label?.cliente) || 'NO';
+  // Misma fuente que usa la etiqueta grande para "LOCALIDAD:" (direccion2, con
+  // localidad como respaldo), para que grande y chica muestren lo mismo.
+  const localidad = clean(label?.direccion2 || label?.localidad) || 'NO';
+  const distribuidor = clean(label?.comercializa) || 'NO';
 
-  // La chica no lleva medidas. Solo N° y REF con el Nombre.
-  // Si el nombre es largo, se parte por espacios en hasta 2 renglones.
+  // La chica no lleva medidas. N°, REF (Nombre), DIST (Distribuidor) y LOC (Localidad).
+  // Si el nombre es largo, se parte por espacios en hasta 2 renglones; distribuidor y
+  // localidad quedan en un solo renglón (el cuadro tiene poco alto disponible) y el
+  // auto-shrink de P-touch (ya activado en prepareSmallTextFragment) achica la letra
+  // si no entra, igual que ya hace hoy con nombres largos.
   const refLines = wrapWords(upper(ref), 14, 2).split('\n').filter(Boolean);
   if (refLines.length) {
     refLines[0] = `REF: ${refLines[0]}`;
@@ -650,7 +657,10 @@ function smallRefText(label) {
     refLines.push('REF: NO');
   }
 
-  return [`NV ${nv}`, ...refLines].join('\n');
+  const distLine = wrapWords(upper(distribuidor), 16, 1).split('\n').filter(Boolean)[0] || 'NO';
+  const locLine = wrapWords(upper(localidad), 16, 1).split('\n').filter(Boolean)[0] || 'NO';
+
+  return [`NV ${nv}`, ...refLines, `DIST: ${distLine}`, `LOC: ${locLine}`].join('\n');
 }
 
 function buildSmallPortonesLabelXml(label, copies = 4) {
