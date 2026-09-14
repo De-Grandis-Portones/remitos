@@ -160,18 +160,23 @@ export function buildFakePreProduccionRow(preproData) {
   };
 }
 
-// Fallback nivel 3: el portón todavía no entró a producción (no hay fila en
-// preproduccion_valores). Se arma la etiqueta con lo que haya en el presupuesto
-// original en presupuestador_quotes. Ancho/alto salen de dimensions.width/height
-// (medida CALCULADA del portón, ya con las reglas de vano aplicadas), nunca de
-// dimensions.vano_width/vano_height (la abertura en bruto).
+// Fallback nivel 3: el portón todavía no tiene fila en preproduccion_valores (eso recien
+// se carga cuando el cliente final acepta el link de aceptación de la NV). Se arma la
+// etiqueta con lo que haya en presupuestador_quotes. Ancho/alto: measurement_form (medida
+// real tomada en el vano por el medidor) pisa a payload.dimensions, con la misma prioridad
+// que usa Presupuestador al armar preproduccion_valores (ver measurementFinalization.js,
+// buildPreproduccionPayload) — measurement_form solo vive en la fila "original" del
+// presupuesto, así que fetchQuoteByNv la trae vía parent_quote_id si matcheó la "copy".
+// Dentro de payload.dimensions, width/height es la medida CALCULADA del portón, ya con las
+// reglas de vano aplicadas, nunca dimensions.vano_width/vano_height (la abertura en bruto).
 export function buildFakeQuoteRow(quoteData) {
   const lines = Array.isArray(quoteData.lines) ? quoteData.lines : [];
   const dims = quoteData.payload?.dimensions || {};
+  const measurementForm = quoteData.measurement_form || {};
   const endCustomer = quoteData.end_customer || {};
 
-  const anchoRaw = firstMm(dims.ancho_final_mm, dims.width_mm, dims.width, dims.ancho);
-  const altoRaw  = firstMm(dims.alto_final_mm, dims.height_mm, dims.height, dims.alto);
+  const anchoRaw = firstMm(measurementForm.ancho_final_mm, dims.ancho_final_mm, dims.width_mm, dims.width, dims.ancho);
+  const altoRaw  = firstMm(measurementForm.alto_final_mm, dims.alto_final_mm, dims.height_mm, dims.height, dims.alto);
 
   return {
     Nombre:         String(endCustomer.name    || '').trim(),
@@ -346,7 +351,7 @@ export async function fetchQuoteByNv(nv) {
 
   try {
     const rows = await query(
-      `SELECT end_customer, note, lines, payload, created_at
+      `SELECT end_customer, note, lines, payload, measurement_form, quote_kind, parent_quote_id, created_at
          FROM public.presupuestador_quotes
         WHERE odoo_sale_order_name = ANY($1::text[])
            OR final_sale_order_name = ANY($1::text[])
@@ -358,12 +363,26 @@ export async function fetchQuoteByNv(nv) {
     if (!rows.length) return null;
     const row = rows[0];
 
+    // La fila que matchea por NV suele ser la "copy" (quote_kind='copy', sincronizada a
+    // Odoo), pero measurement_form (medida real tomada en el vano) solo se guarda en la
+    // fila "original" de la que salió. Si no vino en la fila matcheada, la buscamos ahí.
+    let measurementForm = row.measurement_form && typeof row.measurement_form === 'object' ? row.measurement_form : null;
+    if (!measurementForm && row.quote_kind === 'copy' && row.parent_quote_id) {
+      const originalRows = await query(
+        `SELECT measurement_form FROM public.presupuestador_quotes WHERE id = $1 LIMIT 1`,
+        [row.parent_quote_id]
+      );
+      const originalForm = originalRows[0]?.measurement_form;
+      measurementForm = originalForm && typeof originalForm === 'object' ? originalForm : null;
+    }
+
     return {
-      end_customer: row.end_customer || {},
-      note:         String(row.note || '').trim(),
-      lines:        Array.isArray(row.lines) ? row.lines : [],
-      payload:      row.payload || {},
-      created_at:   row.created_at || null,
+      end_customer:     row.end_customer || {},
+      note:              String(row.note || '').trim(),
+      lines:             Array.isArray(row.lines) ? row.lines : [],
+      payload:           row.payload || {},
+      measurement_form:  measurementForm || {},
+      created_at:        row.created_at || null,
     };
   } catch (err) {
     console.warn('[presupuestadorDb] fetchQuoteByNv error:', err?.message || err);
