@@ -129,6 +129,15 @@ export function jsonUrlForRemito({ tipo, sucursal, numero, empresa }) {
   return withEmpresa(base, empresa);
 }
 
+export async function createTicket({ categoria, mensaje, nombre, adjuntos }) {
+  const url = `${API_BASE}/api/tickets`;
+  return httpJson(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ categoria, mensaje, nombre, rutaOrigen: 'remitos', adjuntos }),
+  });
+}
+
 export async function generateCustomRemitoPdf({ empresa, header, items }) {
   const base = `${API_BASE}/api/remitos/custom/pdf`;
   const url = withEmpresa(base, empresa);

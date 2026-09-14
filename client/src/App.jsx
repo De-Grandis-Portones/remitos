@@ -11,6 +11,7 @@ import {
   searchRemitosByNv,
   warmupNv,
 } from './api.js';
+import TicketWidget from './TicketWidget.jsx';
 
 const WARMUP_EMPRESA = 'portones';
 const WARMUP_NV = 4000;
@@ -455,7 +456,7 @@ export default function App() {
 
   return (
     <div className="page">
-      <header className="header">
+      <header className="header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <div className="brand">
           <button
             type="button"
@@ -492,6 +493,8 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        <TicketWidget />
       </header>
 
       <form className="card" onSubmit={onSearch}>

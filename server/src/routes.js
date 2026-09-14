@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getPool, sql } from './db.js';
 import { buildRemitoPdf } from './pdf.js';
 import { fetchPreproduccionByNv, fetchPreproduccionByNvIpanel, fetchQuoteByNv } from './presupuestadorDb.js';
+import { createTicket } from './ticketsDb.js';
 
 const router = Router();
 
@@ -923,6 +924,40 @@ router.post('/remitos/custom/pdf', async (req, res) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'PDF generation error', detail: String(err.message || err) });
+  }
+});
+
+// Tickets: remitos no tiene login, así que el nombre de quien lo manda viaja
+// en el body (lo escribe a mano en el formulario). Se gestionan todos desde
+// /admin/tickets en planificación.
+const MAX_TICKET_ADJUNTOS = 5;
+function normalizeTicketAdjuntos(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, MAX_TICKET_ADJUNTOS).map((a) => ({
+    name: String(a?.name || 'adjunto').slice(0, 200),
+    type: String(a?.type || 'application/octet-stream').slice(0, 100),
+    size: Number(a?.size || 0) || 0,
+    data_url: String(a?.data_url || ''),
+    uploaded_at: a?.uploaded_at || new Date().toISOString(),
+  })).filter((a) => a.data_url);
+}
+
+router.post('/tickets', async (req, res) => {
+  try {
+    const categoria = String(req.body?.categoria || '').trim();
+    const mensaje = String(req.body?.mensaje || '').trim();
+    const nombre = String(req.body?.nombre || '').trim();
+    const rutaOrigen = req.body?.rutaOrigen ? String(req.body.rutaOrigen) : null;
+    const adjuntos = normalizeTicketAdjuntos(req.body?.adjuntos);
+    if (!categoria) return res.status(400).json({ error: 'Falta la categoría' });
+    if (!mensaje) return res.status(400).json({ error: 'Falta el mensaje' });
+    if (!nombre) return res.status(400).json({ error: 'Falta tu nombre' });
+
+    const ticket = await createTicket({ categoria, mensaje, rutaOrigen, creadoPorUsername: nombre, adjuntos });
+    return res.json({ ok: true, ticket });
+  } catch (err) {
+    console.error('POST /tickets error:', err);
+    return res.status(500).json({ error: 'Error creando el ticket', detail: String(err.message || err) });
   }
 });
 
