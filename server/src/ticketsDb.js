@@ -47,6 +47,7 @@ async function ensureTicketsSchema(pool) {
     CREATE INDEX IF NOT EXISTS idx_tickets_estado ON public.tickets(estado);
     CREATE INDEX IF NOT EXISTS idx_tickets_creado_por ON public.tickets(creado_por_id);
     CREATE INDEX IF NOT EXISTS idx_tickets_app_origen ON public.tickets(app_origen);
+    CREATE INDEX IF NOT EXISTS idx_tickets_created_at ON public.tickets(created_at DESC);
 
     CREATE TABLE IF NOT EXISTS public.ticket_mensajes (
       id SERIAL PRIMARY KEY,

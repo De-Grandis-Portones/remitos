@@ -4,6 +4,14 @@
 // vendedor/distribuidor (mismo formato de attachment, mismos límites).
 const MAX_TICKET_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 const MAX_TICKET_VIDEO_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+// Tope combinado de TODOS los adjuntos de un mismo ticket. En base64 un
+// archivo pesa ~x1.34 su tamaño real, así que 15MB crudos ya son ~20MB de
+// JSON — el body-parser del backend acepta hasta 25MB en total (ver
+// express.json({ limit }) en cada backend), y ese límite es para el body
+// entero (adjuntos + mensaje + resto del JSON). Sin este tope, adjuntar 2-3
+// archivos grandes que individualmente pasan el chequeo de arriba hacía que
+// el envío fallara con un 413 sin mensaje claro para quien lo mandaba.
+export const MAX_TICKET_ATTACHMENTS_TOTAL_BYTES = 15 * 1024 * 1024;
 const VIDEO_TICKET_ATTACHMENT_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/webm']);
 const ALLOWED_TICKET_ATTACHMENT_TYPES = new Set([
   'application/pdf',
@@ -26,6 +34,14 @@ function maxBytesForFile(file) {
 
 function formatMb(bytes) {
   return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
+}
+
+export function ticketAttachmentsTotalBytes(list) {
+  return (Array.isArray(list) ? list : []).reduce((sum, a) => sum + (Number(a?.size) || 0), 0);
+}
+
+export function formatTicketAttachmentsMb(bytes) {
+  return formatMb(bytes);
 }
 
 function safeText(value) {

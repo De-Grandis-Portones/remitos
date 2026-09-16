@@ -21,8 +21,14 @@ async function httpJsonDetailed(url, options) {
 async function httpJson(url, options) {
   const { ok, status, data } = await httpJsonDetailed(url, options);
   if (!ok) {
+    // Un 413 (body-parser rechaza el JSON por tamaño) no trae `data.error`
+    // -- el body-parser corta antes de llegar a la ruta -- así que exponemos
+    // `status` en el Error para que quien llama pueda dar un mensaje claro
+    // en ese caso puntual en vez de un "HTTP 413" genérico.
     const msg = data?.error || `HTTP ${status}`;
-    throw new Error(msg);
+    const error = new Error(msg);
+    error.status = status;
+    throw error;
   }
   return data;
 }

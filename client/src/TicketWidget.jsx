@@ -4,6 +4,9 @@ import {
   fileToTicketAttachment,
   formatTicketAttachmentMeta,
   isImageTicketAttachment,
+  ticketAttachmentsTotalBytes,
+  formatTicketAttachmentsMb,
+  MAX_TICKET_ATTACHMENTS_TOTAL_BYTES,
 } from './utils/ticketAttachment.js';
 
 // Remitos no tiene ningún sistema de login (toda la API es pública), así que
@@ -62,7 +65,15 @@ export default function TicketWidget() {
       for (const file of files) {
         nuevos.push(await fileToTicketAttachment(file));
       }
-      setAdjuntos((prev) => [...prev, ...nuevos].slice(0, 5));
+      const combinados = [...adjuntos, ...nuevos].slice(0, 5);
+      const totalBytes = ticketAttachmentsTotalBytes(combinados);
+      if (totalBytes > MAX_TICKET_ATTACHMENTS_TOTAL_BYTES) {
+        throw new Error(
+          `Entre todos los adjuntos no pueden superar ${formatTicketAttachmentsMb(MAX_TICKET_ATTACHMENTS_TOTAL_BYTES)} ` +
+          `(llevás ${formatTicketAttachmentsMb(totalBytes)}). Sacá alguno o elegí uno más liviano.`
+        );
+      }
+      setAdjuntos(combinados);
     } catch (err) {
       setError(err.message || 'No se pudo adjuntar el archivo.');
     } finally {
@@ -101,7 +112,11 @@ export default function TicketWidget() {
       setEnviado(true);
       setTimeout(() => setEnviado(false), 4000);
     } catch (err) {
-      setError(err.message || String(err));
+      if (err?.status === 413) {
+        setError('Los adjuntos son demasiado pesados para enviarse juntos. Sacá alguno o achicalo e intentá de nuevo.');
+      } else {
+        setError(err.message || String(err));
+      }
     } finally {
       setEnviando(false);
     }
