@@ -203,6 +203,25 @@ function tableHeaderBlock(doc, header, yStart) {
   return y + h;
 }
 
+// Trunca por ancho real (no por cantidad de caracteres) para que en modo 'single'/'clip'
+// el texto entre garantizado en una sola línea visual dentro de descWidth. Sin esto,
+// una descripción larga puede seguir siendo más ancha que la columna a ese fontSize y
+// PDFKit la envuelve en 2 líneas aunque solo reservamos el alto de 1 (rowH = fontSize+2),
+// pisando la fila siguiente ("letras sobrepuestas").
+function truncateToWidth(doc, text, maxWidth) {
+  if (doc.widthOfString(text) <= maxWidth) return text;
+  const ellipsis = '…';
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const candidate = text.slice(0, mid).trimEnd() + ellipsis;
+    if (doc.widthOfString(candidate) <= maxWidth) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo > 0 ? text.slice(0, lo).trimEnd() + ellipsis : ellipsis;
+}
+
 function fitItemsLayout(doc, items, descWidth, opts) {
   const { topY, bottomY, prodX, qtyX, descX } = opts;
   const available = bottomY - topY;
@@ -222,7 +241,7 @@ function fitItemsLayout(doc, items, descWidth, opts) {
     let y = topY;
     for (const it of items) {
       const desc = normalizeText(it.descripcion || it.desc || it.producto || '');
-      const d = layout.mode === 'wrap' ? desc : desc.slice(0, 90);
+      const d = layout.mode === 'wrap' ? desc : truncateToWidth(doc, desc, descWidth);
       const h = doc.heightOfString(d, { width: descWidth, lineGap: layout.lineGap });
       const rowH = Math.max(h, layout.fontSize + 2);
       y += rowH;
@@ -274,8 +293,7 @@ function itemsBlock(doc, header, items, yStart) {
 
     let desc;
     if (layout.mode === 'wrap') desc = descFull;
-    else if (layout.mode === 'single') desc = descFull.slice(0, 120);
-    else desc = descFull.slice(0, 80);
+    else desc = truncateToWidth(doc, descFull, descWidth);
 
     const h = layout.mode === 'wrap'
       ? doc.heightOfString(desc, { width: descWidth, lineGap: layout.lineGap })
@@ -287,7 +305,14 @@ function itemsBlock(doc, header, items, yStart) {
 
     doc.text(prod, prodX, y, { width: 90 });
     doc.text(qty, qtyX, y, { width: 70, align: 'right' });
-    doc.text(desc, descX, y, { width: descWidth, lineGap: layout.lineGap });
+    if (layout.mode === 'wrap') {
+      doc.text(desc, descX, y, { width: descWidth, lineGap: layout.lineGap });
+    } else {
+      // lineBreak:false es el resguardo final: aunque truncateToWidth calcule mal
+      // por algún caso límite, PDFKit nunca va a envolver a una 2da línea y pisar
+      // la fila siguiente.
+      doc.text(desc, descX, y, { width: descWidth, lineGap: layout.lineGap, lineBreak: false });
+    }
 
     y += rowH;
     rendered += 1;

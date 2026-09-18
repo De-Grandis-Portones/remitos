@@ -252,11 +252,17 @@ export async function fetchPreproduccionByNv(nv) {
     // carga el Presupuestador nuevo, un sync viejo (Integrador, desde el legado
     // WebApp.dbo.Pre_Produccion) puede haber dejado otra fila con nv_tipo='NV' y sin
     // nv_lines. Preferimos la fila que realmente tenga ítems cargados.
+    // Además, 'ONV' (venta "Otros" vinculada, ej. instalación) puede compartir el
+    // mismo nv que el pedido principal (portón/puerta/plegado) y sincronizarse más
+    // tarde: nunca debe ganarle a la fila principal, el remito es de la mercadería,
+    // no del servicio vinculado.
     const rows = await query(
       `SELECT nv, nv_tipo, nv_lines, data, updated_at
          FROM public.preproduccion_valores
         WHERE nv = $1 AND nv_tipo <> 'INV'
-        ORDER BY (jsonb_array_length(coalesce(nv_lines, '[]'::jsonb)) > 0) DESC, updated_at DESC
+        ORDER BY (nv_tipo = 'ONV') ASC,
+                 (jsonb_array_length(coalesce(nv_lines, '[]'::jsonb)) > 0) DESC,
+                 updated_at DESC
         LIMIT 1`,
       [nvInt]
     );
@@ -348,6 +354,10 @@ export async function fetchQuoteByNv(nv) {
   const nvInt = Math.trunc(Number(nv));
   if (!Number.isFinite(nvInt) || nvInt <= 0) return null;
   const candidates = candidateNvNames(nvInt);
+  // Igual que en fetchPreproduccionByNv: 'ONV<nv>' (venta "Otros" vinculada) puede
+  // coexistir con la fila principal (NV/PLNV/PNV<nv>) bajo el mismo número. El remito
+  // es de la mercadería, no del servicio vinculado, así que nunca debe ganarle.
+  const onvCandidate = `ONV${nvInt}`;
 
   try {
     const rows = await query(
@@ -355,9 +365,10 @@ export async function fetchQuoteByNv(nv) {
          FROM public.presupuestador_quotes
         WHERE odoo_sale_order_name = ANY($1::text[])
            OR final_sale_order_name = ANY($1::text[])
-        ORDER BY created_at DESC NULLS LAST
+        ORDER BY (coalesce(odoo_sale_order_name = $2, false) OR coalesce(final_sale_order_name = $2, false)) ASC,
+                 created_at DESC NULLS LAST
         LIMIT 1`,
-      [candidates]
+      [candidates, onvCandidate]
     );
 
     if (!rows.length) return null;

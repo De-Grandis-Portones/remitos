@@ -289,25 +289,33 @@ async function fetchPanelesNtasvtasObservacion(pool, { nv, remitoNumero }) {
 // aceptación pendiente (nombre/dirección/líneas del presupuesto).
 async function fetchPortonesNvFromLegacySql(pool, nv) {
   try {
+    // 'ONV' (venta "Otros" vinculada, ej. instalación) puede compartir el mismo
+    // numero que el pedido principal (tipo 'NV'/otros). El remito es de la
+    // mercadería, no del servicio vinculado, así que nunca debe ganarle al elegir
+    // el header — mismo criterio que fetchPreproduccionByNv/fetchQuoteByNv (Supabase).
     const headerR = await pool.request()
       .input('nv', sql.Int, nv)
       .query(`
-        SELECT TOP 1 fecha, nombre, direccion, localidad, provincia, observ, dirent
+        SELECT TOP 1 fecha, nombre, direccion, localidad, provincia, observ, dirent, tipo, sucursal
         FROM dbo.NTASVTAS
         WHERE numero = @nv
-        ORDER BY fecha DESC;
+        ORDER BY CASE WHEN LTRIM(RTRIM(tipo)) = 'ONV' THEN 1 ELSE 0 END ASC, fecha DESC;
       `);
 
     const header = headerR.recordset?.[0];
     if (!header) return null;
 
+    // Los items quedan atados a (tipo, sucursal, numero) del header elegido, para no
+    // mezclar los ítems del portón con los de la venta "Otros" vinculada.
     const itemsR = await pool.request()
       .input('nv', sql.Int, nv)
+      .input('tipo', sql.VarChar(10), header.tipo)
+      .input('sucursal', sql.SmallInt, header.sucursal)
       .query(`
         SELECT i.producto, i.cantidad, p.descripcion
         FROM dbo.INTASVTAS i
         LEFT JOIN dbo.PRODUCTOS p ON p.codigo = i.producto
-        WHERE i.numero = @nv
+        WHERE i.numero = @nv AND i.tipo = @tipo AND i.sucursal = @sucursal
         ORDER BY i.producto;
       `);
 
