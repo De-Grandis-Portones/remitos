@@ -253,15 +253,22 @@ export async function fetchPreproduccionByNv(nv) {
     // WebApp.dbo.Pre_Produccion) puede haber dejado otra fila con nv_tipo='NV' y sin
     // nv_lines. Preferimos la fila que realmente tenga ítems cargados.
     // Además, 'ONV' (venta "Otros" vinculada, ej. instalación) puede compartir el
-    // mismo nv que el pedido principal (portón/puerta/plegado) y sincronizarse más
-    // tarde: nunca debe ganarle a la fila principal, el remito es de la mercadería,
-    // no del servicio vinculado.
+    // mismo nv que el pedido principal (portón/puerta/plegado) y sincronizarse antes:
+    // si el portón todavía no llegó a esta tabla (cliente no aceptó SU link de
+    // medición todavía, aunque sí el de la venta vinculada), no hay que asentarse
+    // con la fila de "otros" — mejor devolver null acá y que fetchPendingRemitoDataByNv
+    // caiga al Nivel 2 (fetchQuoteByNv), que sí tiene el detalle real del portón.
+    // IMPORTANTE: nv_tipo no siempre es confiable (visto en producción: un pedido
+    // catalog_kind='ipanel' quedó guardado con nv_tipo='NV' en vez de 'INV', un bug
+    // del lado del Presupuestador). Por eso filtramos por data->>'catalog_kind'
+    // directamente en vez de confiar solo en nv_tipo.
     const rows = await query(
       `SELECT nv, nv_tipo, nv_lines, data, updated_at
          FROM public.preproduccion_valores
-        WHERE nv = $1 AND nv_tipo <> 'INV'
-        ORDER BY (nv_tipo = 'ONV') ASC,
-                 (jsonb_array_length(coalesce(nv_lines, '[]'::jsonb)) > 0) DESC,
+        WHERE nv = $1
+          AND nv_tipo <> 'INV'
+          AND coalesce(data->>'catalog_kind', '') NOT IN ('ipanel', 'otros')
+        ORDER BY (jsonb_array_length(coalesce(nv_lines, '[]'::jsonb)) > 0) DESC,
                  updated_at DESC
         LIMIT 1`,
       [nvInt]
