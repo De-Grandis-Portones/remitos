@@ -1,10 +1,24 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { getPool, sql } from './db.js';
 import { buildRemitoPdf } from './pdf.js';
 import { fetchPreproduccionByNv, fetchPreproduccionByNvIpanel, fetchQuoteByNv } from './presupuestadorDb.js';
 import { createTicket } from './ticketsDb.js';
 
 const router = Router();
+
+// POST /tickets es la única ruta de escritura pública de este archivo (todo
+// remitos es sin login, ver comentario en ticketsDb.js) que inserta en la
+// base de producción COMPARTIDA con el resto del ecosistema. Sin esto,
+// cualquiera con la URL puede scriptear POSTs (incluso con adjuntos de
+// hasta ~25MB) y llenar esa tabla compartida sin límite.
+const ticketsCreateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados tickets enviados. Esperá unos minutos y probá de nuevo.' },
+});
 
 function parseIntSafe(v) {
   const n = Number(v);
@@ -939,6 +953,22 @@ router.post('/remitos/custom/pdf', async (req, res) => {
 // en el body (lo escribe a mano en el formulario). Se gestionan todos desde
 // /admin/tickets en planificación.
 const MAX_TICKET_ADJUNTOS = 5;
+// ~15MB de bytes crudos de adjuntos (igual al límite combinado del cliente,
+// ver ticketAttachment.js) codificado en base64 (~x1.34). Es una defensa de
+// segunda línea: el cliente ya valida esto antes de enviar, pero acá no hay
+// login, así que no hay que confiar en que el request venga de ese cliente.
+const MAX_TICKET_ADJUNTOS_DATA_URL_CHARS = 21 * 1024 * 1024;
+// El cliente SIEMPRE genera data_url con FileReader.readAsDataURL(), así que
+// nunca debería ser otra cosa. Sin este chequeo, alguien podía mandar
+// data_url = "https://atacante.com/pixel.gif" (o un data: URI con un mime no
+// permitido, ej. text/html) y que se renderizara solo (<img src>) o se
+// abriera (openTicketAttachment) al primer admin que mirara el ticket —
+// tracking pixel o, peor, un blob text/html ejecutando JS en el origen del
+// panel admin (robo de token vía localStorage). Se valida el mime REAL
+// embebido en el data: URI, no el campo `type` (que también lo controla
+// quien manda el ticket y no tiene por qué coincidir) — acá es más crítico
+// todavía porque esta ruta no tiene login.
+const ALLOWED_ADJUNTO_DATA_URL_RE = /^data:(image\/(?:jpeg|png|webp|gif)|application\/pdf|video\/(?:mp4|quicktime|webm));base64,/i;
 function normalizeTicketAdjuntos(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.slice(0, MAX_TICKET_ADJUNTOS).map((a) => ({
@@ -947,10 +977,10 @@ function normalizeTicketAdjuntos(raw) {
     size: Number(a?.size || 0) || 0,
     data_url: String(a?.data_url || ''),
     uploaded_at: a?.uploaded_at || new Date().toISOString(),
-  })).filter((a) => a.data_url);
+  })).filter((a) => ALLOWED_ADJUNTO_DATA_URL_RE.test(a.data_url));
 }
 
-router.post('/tickets', async (req, res) => {
+router.post('/tickets', ticketsCreateLimiter, async (req, res) => {
   try {
     const categoria = String(req.body?.categoria || '').trim();
     const mensaje = String(req.body?.mensaje || '').trim();
@@ -960,6 +990,10 @@ router.post('/tickets', async (req, res) => {
     if (!categoria) return res.status(400).json({ error: 'Falta la categoría' });
     if (!mensaje) return res.status(400).json({ error: 'Falta el mensaje' });
     if (!nombre) return res.status(400).json({ error: 'Falta tu nombre' });
+    const adjuntosChars = adjuntos.reduce((sum, a) => sum + a.data_url.length, 0);
+    if (adjuntosChars > MAX_TICKET_ADJUNTOS_DATA_URL_CHARS) {
+      return res.status(400).json({ error: 'Los adjuntos superan el tamaño total permitido.' });
+    }
 
     const ticket = await createTicket({ categoria, mensaje, rutaOrigen, creadoPorUsername: nombre, adjuntos });
     return res.json({ ok: true, ticket });
