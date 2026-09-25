@@ -2,7 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { getPool, sql } from './db.js';
 import { buildRemitoPdf } from './pdf.js';
-import { fetchPreproduccionByNv, fetchPreproduccionByNvIpanel, fetchQuoteByNv } from './presupuestadorDb.js';
+import { fetchPreproduccionByNv, fetchPreproduccionByNvIpanel, fetchQuoteByNv, resolveNvTipoPrefix } from './presupuestadorDb.js';
 import { createTicket } from './ticketsDb.js';
 
 const router = Router();
