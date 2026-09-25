@@ -15,7 +15,9 @@ const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || '';
 
-app.use(express.json({ limit: '1mb' }));
+// 25mb: deja lugar a los adjuntos de un ticket (hasta 5, ~15MB cada uno en
+// base64) ademas del resto del payload. Ver POST /tickets en routes.js.
+app.use(express.json({ limit: '25mb' }));
 
 // CORS: acepta lista separada por comas en CLIENT_ORIGIN, o permite todo si está vacío
 const allowedOrigins = CLIENT_ORIGIN
