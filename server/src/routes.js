@@ -38,32 +38,32 @@ function resolveDatabase(req) {
 // Health check
 router.get('/health', (req, res) => res.json({ ok: true }));
 
-async function fetchFacturaByNv(pool, nv) {
+async function fetchFacturaByNv(pool, nv, expectedTipo) {
   // La tabla NTASVTAS puede variar entre instalaciones (fecha/cfecha, etc.).
   // Probamos distintos queries para ser tolerantes a schema.
   const attempts = [
     {
-      name: 'NTASVTAS(numero,factura,remito,cliente,fecha)',
+      name: 'NTASVTAS(numero,tipo,factura,remito,cliente,fecha)',
       sql: `
-        SELECT TOP (10) numero, factura, remito, cliente, fecha
+        SELECT TOP (10) numero, tipo, factura, remito, cliente, fecha
         FROM dbo.NTASVTAS
         WHERE numero = @nv
         ORDER BY fecha DESC;
       `
     },
     {
-      name: 'NTASVTAS(numero,factura,remito,cliente,cfecha)',
+      name: 'NTASVTAS(numero,tipo,factura,remito,cliente,cfecha)',
       sql: `
-        SELECT TOP (10) numero, factura, remito, cliente, cfecha
+        SELECT TOP (10) numero, tipo, factura, remito, cliente, cfecha
         FROM dbo.NTASVTAS
         WHERE numero = @nv
         ORDER BY cfecha DESC;
       `
     },
     {
-      name: 'NTASVTAS(numero,factura,remito,cliente)',
+      name: 'NTASVTAS(numero,tipo,factura,remito,cliente)',
       sql: `
-        SELECT TOP (10) numero, factura, remito, cliente
+        SELECT TOP (10) numero, tipo, factura, remito, cliente
         FROM dbo.NTASVTAS
         WHERE numero = @nv;
       `
@@ -77,7 +77,19 @@ async function fetchFacturaByNv(pool, nv) {
         .query(att.sql);
 
       const rows = r.recordset || [];
-      const first = rows.find(x => x?.factura !== null && x?.factura !== undefined);
+
+      // El numero no es unico entre tipos (ver resolveNvTipoPrefix): si el Presupuestador
+      // nos dijo que tipo le corresponde a este numero, nos quedamos solo con esas filas.
+      // Si ninguna fila matchea ese tipo, esta NO es la NV que estamos buscando (es otra,
+      // con el mismo numero) — cortamos acá para que el caller caiga al fallback en vez
+      // de mostrar el remito de un pedido completamente distinto.
+      let candidates = rows;
+      if (expectedTipo) {
+        candidates = rows.filter((x) => String(x?.tipo || '').trim().toUpperCase() === expectedTipo.toUpperCase());
+        if (!candidates.length && rows.length) return null;
+      }
+
+      const first = candidates.find(x => x?.factura !== null && x?.factura !== undefined);
       if (!first) continue;
 
       // NTASVTAS.remito es la confirmación directa de que esta NV ya fue remitada.
@@ -301,7 +313,7 @@ async function fetchPanelesNtasvtasObservacion(pool, { nv, remitoNumero }) {
 // Nivel 2 (fallback): presupuestador_quotes — mientras el cliente no aceptó, igual
 // puede hacer falta remitar; usamos la misma info que ve el cliente en el link de
 // aceptación pendiente (nombre/dirección/líneas del presupuesto).
-async function fetchPortonesNvFromLegacySql(pool, nv) {
+async function fetchPortonesNvFromLegacySql(pool, nv, expectedTipo) {
   try {
     // 'ONV' (venta "Otros" vinculada, ej. instalación) puede compartir el mismo
     // numero que el pedido principal (tipo 'NV'/otros). El remito es de la
@@ -309,6 +321,7 @@ async function fetchPortonesNvFromLegacySql(pool, nv) {
     // el header — mismo criterio que fetchPreproduccionByNv/fetchQuoteByNv (Supabase).
     const headerR = await pool.request()
       .input('nv', sql.Int, nv)
+      .input('expectedTipo', sql.VarChar(10), expectedTipo || null)
       .query(`
         SELECT TOP 1 fecha, nombre, direccion, localidad, provincia, observ, dirent, tipo, sucursal
         FROM dbo.NTASVTAS
@@ -415,8 +428,10 @@ async function fetchPendingRemitoDataFromQuote(nv) {
 }
 
 // Portones / otros / plegados / puerta (comparten preproduccion_valores).
-async function fetchPendingRemitoDataByNv(pool, nv) {
-  const legacyData = await fetchPortonesNvFromLegacySql(pool, nv);
+async function fetchPendingRemitoDataByNv(pool, nv, expectedTipo) {
+  // pool puede venir null si el SQL Server legado está caído: seguimos directo
+  // al Presupuestador nuevo (Supabase) en vez de fallar.
+  const legacyData = pool ? await fetchPortonesNvFromLegacySql(pool, nv, expectedTipo) : null;
   if (legacyData) return toPendingRemitoDataFromLegacySql(legacyData);
 
   const preproData = await fetchPreproduccionByNv(nv);
@@ -601,43 +616,78 @@ router.get('/remitos/search-by-nv', async (req, res) => {
     return res.status(400).json({ error: 'Query param "nv" must be a number.' });
   }
 
+  const db = resolveDatabase(req);
+  const isPaneles = String(db).toLowerCase() === 'paneles';
+
+  // El SQL Server legado (ERP) puede estar caído sin que eso deba bloquear una
+  // NV que ya vive entera en el Presupuestador nuevo (Supabase). Si falla la
+  // conexión, seguimos sin pool e vamos directo al fallback en vez de 500.
+  let pool = null;
+  let poolError = null;
   try {
-    const db = resolveDatabase(req);
-    const pool = await getPool(db);
+    pool = await getPool(db);
+  } catch (err) {
+    poolError = err;
+  }
+
+  // El numero no es unico entre tipos (NV/PNV/PLNV/ONV comparten secuencia en el ERP
+  // legado, y con el tiempo pueden coincidir dos pedidos distintos con el mismo numero
+  // — visto en producción). Le preguntamos al Presupuestador que tipo le corresponde
+  // a este numero para poder filtrar el ERP legado por ese tipo. No aplica a Paneles
+  // (ipanel usa su propia secuencia separada, sin este problema visto todavía).
+  const expectedTipo = isPaneles ? null : await resolveNvTipoPrefix(nv);
+
+  async function fallbackToPresupuestador() {
+    const pending = isPaneles
+      ? await fetchPendingRemitoDataByNvIpanel(nv)
+      : await fetchPendingRemitoDataByNv(pool, nv, expectedTipo);
+    if (!pending) {
+      if (poolError) {
+        return res.status(503).json({
+          error: 'La base legada no está disponible y la NV no se encontró en el Presupuestador.',
+          detail: String(poolError.message || poolError),
+        });
+      }
+      return res.status(404).json({ error: 'La NV ingresada no tiene remito aún.' });
+    }
+    const virtualItem = {
+      tipo: 'PP',
+      sucursal: 1,
+      numero: nv,
+      fecha: pending.fecha || new Date().toISOString(),
+      cliente: '',
+      nombre: pending.nombre,
+      direccion: pending.direccion,
+      localidad: pending.localidad,
+      provincia: pending.provincia,
+      cp: '',
+      anulado: null,
+      pendiente: pending.pendingClientApproval || pending.linesAreSynthesized,
+      _fromPresupuestador: true,
+      _pendingClientApproval: pending.pendingClientApproval,
+      _linesAreSynthesized: pending.linesAreSynthesized,
+    };
+    return res.json({
+      nv,
+      fromPresupuestador: true,
+      pendingClientApproval: pending.pendingClientApproval,
+      linesAreSynthesized: pending.linesAreSynthesized,
+      items: [virtualItem],
+    });
+  }
+
+  if (!pool) {
+    return await fallbackToPresupuestador();
+  }
+
+  try {
     // Paneles: NV -> NTASVTAS.remito -> REMITOS/IREMITOS(numero)
-    if (String(db).toLowerCase() === 'paneles') {
+    if (isPaneles) {
       const remito = await fetchRemitoByNvPaneles(pool, nv);
 
       // Si la NV no existe en SQL (Paneles) → buscar en el presupuestador nuevo (Supabase)
       if (!remito) {
-        const pending = await fetchPendingRemitoDataByNvIpanel(nv);
-        if (!pending) {
-          return res.status(404).json({ error: 'La NV ingresada no tiene remito aún.' });
-        }
-        const virtualItem = {
-          tipo: 'PP',
-          sucursal: 1,
-          numero: nv,
-          fecha: pending.fecha || new Date().toISOString(),
-          cliente: '',
-          nombre: pending.nombre,
-          direccion: pending.direccion,
-          localidad: pending.localidad,
-          provincia: pending.provincia,
-          cp: '',
-          anulado: null,
-          pendiente: pending.pendingClientApproval || pending.linesAreSynthesized,
-          _fromPresupuestador: true,
-          _pendingClientApproval: pending.pendingClientApproval,
-          _linesAreSynthesized: pending.linesAreSynthesized,
-        };
-        return res.json({
-          nv,
-          fromPresupuestador: true,
-          pendingClientApproval: pending.pendingClientApproval,
-          linesAreSynthesized: pending.linesAreSynthesized,
-          items: [virtualItem],
-        });
+        return await fallbackToPresupuestador();
       }
 
       const r = await pool.request()
@@ -660,45 +710,14 @@ router.get('/remitos/search-by-nv', async (req, res) => {
 
       const items = r.recordset || [];
       if (items.length === 0) {
-        return res.status(404).json({ error: 'La NV ingresada no tiene remito aún.' });
+        return await fallbackToPresupuestador();
       }
 
       return res.json({ nv, remito: Number(remito), items });
     }
 
     // Portones (default): NV -> NTASVTAS.factura -> IREMITOS.facnro -> REMITOS
-    const facturaInfo = await fetchFacturaByNv(pool, nv);
-
-    async function fallbackToPresupuestador() {
-      const pending = await fetchPendingRemitoDataByNv(pool, nv);
-      if (!pending) {
-        return res.status(404).json({ error: 'La NV ingresada no tiene remito aún.' });
-      }
-      const virtualItem = {
-        tipo: 'PP',
-        sucursal: 1,
-        numero: nv,
-        fecha: pending.fecha || new Date().toISOString(),
-        cliente: '',
-        nombre: pending.nombre,
-        direccion: pending.direccion,
-        localidad: pending.localidad,
-        provincia: pending.provincia,
-        cp: '',
-        anulado: null,
-        pendiente: pending.pendingClientApproval || pending.linesAreSynthesized,
-        _fromPresupuestador: true,
-        _pendingClientApproval: pending.pendingClientApproval,
-        _linesAreSynthesized: pending.linesAreSynthesized,
-      };
-      return res.json({
-        nv,
-        fromPresupuestador: true,
-        pendingClientApproval: pending.pendingClientApproval,
-        linesAreSynthesized: pending.linesAreSynthesized,
-        items: [virtualItem],
-      });
-    }
+    const facturaInfo = await fetchFacturaByNv(pool, nv, expectedTipo);
 
     // Si la NV no existe en SQL → buscar en el presupuestador nuevo (Supabase)
     if (!facturaInfo) {
@@ -789,9 +808,10 @@ router.get('/remitos/:tipo/:sucursal/:numero/pdf', async (req, res) => {
     try {
       const db = resolveDatabase(req);
       const isPaneles = String(db).toLowerCase() === 'paneles';
+      const expectedTipo = isPaneles ? null : await resolveNvTipoPrefix(numero);
       const pending = isPaneles
         ? await fetchPendingRemitoDataByNvIpanel(numero)
-        : await fetchPendingRemitoDataByNv(await getPool(db), numero);
+        : await fetchPendingRemitoDataByNv(await getPool(db), numero, expectedTipo);
       if (!pending) return res.status(404).json({ error: 'NV no encontrada en el presupuestador.' });
 
       const header = {

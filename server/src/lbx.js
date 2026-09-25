@@ -620,9 +620,13 @@ function escapeXmlPreserveWhitespace(v) {
 
 
 function prepareSmallTextFragment(fragment) {
-  // La etiqueta chica solo lleva N° y REF.
-  // Usamos mas alto/ancho y autoLF para que nombres largos bajen de renglon
-  // en lugar de cortarse.
+  // La etiqueta chica lleva N°, REF, DIST y LOC en un cuadro de alto fijo.
+  // La plantilla original trae control="FREE" (cuadro de "auto-tamaño": P-touch
+  // agranda el cuadro para que el texto entre al tamaño de letra actual, en vez
+  // de achicar la letra) - con 4 renglones eso se sale de los margenes de la
+  // etiqueta. Forzamos control="FIXEDFRAME" (cuadro de tamaño fijo) + shrink=true
+  // para que P-touch reduzca el tamaño de letra hasta que el texto entre en el
+  // cuadro, en vez de agrandar el cuadro.
   let out = makeTextResponsive(fragment)
     .replace(/height="39\.8pt"/g, 'height="44pt"')
     .replace(/width="101\.8pt"/g, 'width="132pt"')
@@ -631,7 +635,7 @@ function prepareSmallTextFragment(fragment) {
     .replace(/size="11\.7pt"/g, 'size="9pt"')
     .replace(/orgPoint="40pt"/g, 'orgPoint="9pt"')
     .replace(/orgPoint="28\.8pt"/g, 'orgPoint="9pt"');
-  out = setTextAlign(setTextBox(out, { width: '132pt', height: '44pt', size: '9pt', orgPoint: '9pt', shrink: 'true', autoLF: 'true' }), 'CENTER', 'CENTER');
+  out = setTextAlign(setTextBox(out, { control: 'FIXEDFRAME', width: '132pt', height: '44pt', size: '9pt', orgPoint: '9pt', shrink: 'true', autoLF: 'true' }), 'CENTER', 'CENTER');
   return out;
 }
 
