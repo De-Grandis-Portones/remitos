@@ -24,18 +24,40 @@ const allowedOrigins = CLIENT_ORIGIN
   ? CLIENT_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean)
   : [];
 
+// Vercel genera una URL nueva por cada deployment (production Y cada preview), todas
+// bajo <project>-<hash-opcional>-de-grandis-portones-projects.vercel.app. Si solo
+// confiamos en CLIENT_ORIGIN (una URL fija), cualquier preview o redeploy con hash
+// nuevo queda bloqueado. Aceptamos por patrón cualquier deployment de ESTE proyecto.
+const VERCEL_PREVIEW_ORIGIN = /^https:\/\/remitos(-[a-z0-9-]+)?-de-grandis-portones-projects\.vercel\.app$/i;
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  if (VERCEL_PREVIEW_ORIGIN.test(origin)) return true;
+  // Sin CLIENT_ORIGIN configurado, se mantiene el comportamiento previo: permitir todo.
+  if (!allowedOrigins.length) return true;
+  return allowedOrigins.includes(origin);
+}
+
 app.use(cors({
-  origin: allowedOrigins.length
-    ? (origin, cb) => {
-        if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
-        return cb(new Error(`CORS bloqueado: ${origin}`));
-      }
-    : true,
+  origin: (origin, cb) => {
+    if (isAllowedOrigin(origin)) return cb(null, true);
+    return cb(new Error(`CORS bloqueado: ${origin}`));
+  },
   credentials: false
 }));
 
 app.use('/api', apiRoutes);
 app.use('/api', labelRoutes);
+
+// Sin esto, un origen rechazado por cors() caía al handler de error default de
+// Express: devolvía 500 sin headers de CORS, y el browser lo reportaba como un
+// "Failed to fetch"/500 confuso en vez de un bloqueo de CORS claro.
+app.use((err, req, res, next) => {
+  if (err && String(err.message || '').startsWith('CORS bloqueado')) {
+    return res.status(403).json({ error: err.message });
+  }
+  return next(err);
+});
 
 // Optional: serve built client
 const __filename = fileURLToPath(import.meta.url);
