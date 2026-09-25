@@ -225,6 +225,23 @@ function synthesizeLegacyLines(data) {
   }];
 }
 
+// Equivalente a synthesizeLegacyLines pero para el espejo de Paneles.dbo.NTASVTAS: no
+// trae `lines` item por item, sino una descripcion de producto ya armada (descripcion_producto/
+// producto_descripcion, duplicadas en el JSON) mas los codigos de producto involucrados.
+function synthesizeIpanelLegacyLines(data) {
+  const desc = String(data?.descripcion_producto || data?.producto_descripcion || data?.descripcion || '').trim();
+  if (!desc) return [];
+
+  const codigos = String(data?.producto_codigos || '').trim();
+
+  return [{
+    producto: codigos,
+    name: codigos || 'IPANEL',
+    raw_name: desc,
+    qty: 1,
+  }];
+}
+
 // ─── Query principal ──────────────────────────────────────────────────────────
 
 // Prefijos reales de nv_tipo usados en Odoo (odoo_sale_order_name / final_sale_order_name):
@@ -234,6 +251,43 @@ const NV_TIPO_PREFIXES = ['NV', 'INV', 'ONV', 'PLNV', 'PNV'];
 
 function candidateNvNames(nvInt) {
   return NV_TIPO_PREFIXES.map((prefix) => `${prefix}${nvInt}`);
+}
+
+// El numero de NV/NP NO es unico entre tipos: el ERP legado (NTASVTAS/INTASVTAS) y el
+// Presupuestador nuevo vienen de secuencias distintas, y con el tiempo un numero viejo
+// de tipo 'NV' (porton) puede coincidir con uno nuevo de tipo 'PNV' (puerta) u otro tipo
+// (visto en produccion: NV3994 = porton ya remitado hace meses, PNV3994 = puerta recien
+// entrando a produccion). Esta funcion le pregunta al Presupuestador (fuente de verdad
+// para cualquier pedido creado ahi) que tipo le corresponde a este numero, para que el
+// ERP legado pueda filtrar por ese tipo en vez de confiarse del primer numero que matchee.
+// Devuelve null si el Presupuestador no tiene nada con este numero (NV vieja, pre-Presupuestador).
+export async function resolveNvTipoPrefix(nv) {
+  const nvInt = Math.trunc(Number(nv));
+  if (!Number.isFinite(nvInt) || nvInt <= 0) return null;
+  const candidates = candidateNvNames(nvInt);
+
+  try {
+    const rows = await query(
+      `SELECT final_sale_order_name, odoo_sale_order_name
+         FROM public.presupuestador_quotes
+        WHERE odoo_sale_order_name = ANY($1::text[])
+           OR final_sale_order_name = ANY($1::text[])
+        ORDER BY created_at DESC NULLS LAST
+        LIMIT 1`,
+      [candidates]
+    );
+    if (!rows.length) return null;
+
+    const row = rows[0];
+    const matched = [row.final_sale_order_name, row.odoo_sale_order_name].find((v) => candidates.includes(v));
+    if (!matched) return null;
+
+    const suffix = String(nvInt);
+    return matched.endsWith(suffix) ? matched.slice(0, matched.length - suffix.length) : null;
+  } catch (err) {
+    console.warn('[presupuestadorDb] resolveNvTipoPrefix error:', err?.message || err);
+    return null;
+  }
 }
 
 /**
@@ -252,11 +306,24 @@ export async function fetchPreproduccionByNv(nv) {
     // carga el Presupuestador nuevo, un sync viejo (Integrador, desde el legado
     // WebApp.dbo.Pre_Produccion) puede haber dejado otra fila con nv_tipo='NV' y sin
     // nv_lines. Preferimos la fila que realmente tenga ítems cargados.
+    // Además, 'ONV' (venta "Otros" vinculada, ej. instalación) puede compartir el
+    // mismo nv que el pedido principal (portón/puerta/plegado) y sincronizarse antes:
+    // si el portón todavía no llegó a esta tabla (cliente no aceptó SU link de
+    // medición todavía, aunque sí el de la venta vinculada), no hay que asentarse
+    // con la fila de "otros" — mejor devolver null acá y que fetchPendingRemitoDataByNv
+    // caiga al Nivel 2 (fetchQuoteByNv), que sí tiene el detalle real del portón.
+    // IMPORTANTE: nv_tipo no siempre es confiable (visto en producción: un pedido
+    // catalog_kind='ipanel' quedó guardado con nv_tipo='NV' en vez de 'INV', un bug
+    // del lado del Presupuestador). Por eso filtramos por data->>'catalog_kind'
+    // directamente en vez de confiar solo en nv_tipo.
     const rows = await query(
       `SELECT nv, nv_tipo, nv_lines, data, updated_at
          FROM public.preproduccion_valores
-        WHERE nv = $1 AND nv_tipo <> 'INV'
-        ORDER BY (jsonb_array_length(coalesce(nv_lines, '[]'::jsonb)) > 0) DESC, updated_at DESC
+        WHERE nv = $1
+          AND nv_tipo <> 'INV'
+          AND coalesce(data->>'catalog_kind', '') NOT IN ('ipanel', 'otros')
+        ORDER BY (jsonb_array_length(coalesce(nv_lines, '[]'::jsonb)) > 0) DESC,
+                 updated_at DESC
         LIMIT 1`,
       [nvInt]
     );
@@ -316,16 +383,35 @@ export async function fetchPreproduccionByNvIpanel(nv) {
     if (!rows.length) return null;
     const row = rows[0];
     const data = row.data || {};
-    const nombre = data.cliente_nombre_completo || data.cliente_nombre || '';
+
+    // data trae 2 formatos posibles: el nuevo (cliente_nombre_completo/cliente_direccion/
+    // lines, del Presupuestador) o un espejo del legado (source='SQL', origen=
+    // 'Paneles.dbo.NTASVTAS'): campos planos nombre/direccion/localidad/observ/dirent, SIN
+    // `lines` -- trae en cambio una descripcion de producto ya armada (visto en producción:
+    // NV 100751, remito vacío porque esta fila nunca matcheaba el formato nuevo). El
+    // destinatario real (cliente final) suele venir en observ/dirent, distinto del titular
+    // de cuenta (nombre/direccion) cuando compra un distribuidor -- mismo criterio que
+    // fetchPortonesNvFromLegacySql (routes.js) usa para el espejo de portones.
+    const nombre = data.cliente_nombre_completo || data.cliente_nombre
+      || String(data?.observ || '').trim() || String(data?.nombre || '').trim();
+    const direccion = data.cliente_direccion
+      || String(data?.dirent || '').trim() || String(data?.direccion || '').trim();
+    const localidad = data.cliente_localidad
+      || (direccion ? '' : String(data?.localidad || '').trim());
+
+    const realLines = Array.isArray(data.lines) ? data.lines : [];
+    const isSynthesized = realLines.length === 0;
+    const nvLines = isSynthesized ? synthesizeIpanelLegacyLines(data) : realLines;
 
     return {
       nv:        row.nv,
       nv_tipo:   'INV',
-      nv_lines:  Array.isArray(data.lines) ? data.lines : [],
+      nv_lines:  nvLines,
+      linesAreSynthesized: isSynthesized && nvLines.length > 0,
       data,
       nombre:    String(nombre || '').trim(),
-      direccion: String(data.cliente_direccion || '').trim(),
-      localidad: String(data.cliente_localidad || '').trim(),
+      direccion: String(direccion || '').trim(),
+      localidad: String(localidad || '').trim(),
       provincia: '',
       note:      '',
       fecha_nv:  row.fecha_nv || row.updated_at || null,
@@ -348,6 +434,10 @@ export async function fetchQuoteByNv(nv) {
   const nvInt = Math.trunc(Number(nv));
   if (!Number.isFinite(nvInt) || nvInt <= 0) return null;
   const candidates = candidateNvNames(nvInt);
+  // Igual que en fetchPreproduccionByNv: 'ONV<nv>' (venta "Otros" vinculada) puede
+  // coexistir con la fila principal (NV/PLNV/PNV<nv>) bajo el mismo número. El remito
+  // es de la mercadería, no del servicio vinculado, así que nunca debe ganarle.
+  const onvCandidate = `ONV${nvInt}`;
 
   try {
     const rows = await query(
@@ -355,9 +445,10 @@ export async function fetchQuoteByNv(nv) {
          FROM public.presupuestador_quotes
         WHERE odoo_sale_order_name = ANY($1::text[])
            OR final_sale_order_name = ANY($1::text[])
-        ORDER BY created_at DESC NULLS LAST
+        ORDER BY (coalesce(odoo_sale_order_name = $2, false) OR coalesce(final_sale_order_name = $2, false)) ASC,
+                 created_at DESC NULLS LAST
         LIMIT 1`,
-      [candidates]
+      [candidates, onvCandidate]
     );
 
     if (!rows.length) return null;
