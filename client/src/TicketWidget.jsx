@@ -23,6 +23,10 @@ const TICKET_CATEGORIAS = [
   'Otro',
 ];
 
+// Título libre y obligatorio, para distinguir un ticket de otro en la vista
+// admin de planificación (con solo la categoría se veían todos iguales).
+const MAX_TITULO = 120;
+
 const T = {
   surface: '#ffffff',
   ink: '#0f172a',
@@ -39,6 +43,7 @@ export default function TicketWidget() {
   const panelRef = useRef(null);
 
   const [nombre, setNombre] = useState('');
+  const [titulo, setTitulo] = useState('');
   const [categoria, setCategoria] = useState(TICKET_CATEGORIAS[0]);
   const [mensaje, setMensaje] = useState('');
   const [adjuntos, setAdjuntos] = useState([]);
@@ -102,11 +107,13 @@ export default function TicketWidget() {
   async function enviar(e) {
     e.preventDefault();
     if (!nombre.trim()) return setError('Escribí tu nombre.');
+    if (!titulo.trim()) return setError('Poné un título antes de enviar.');
     if (!mensaje.trim()) return setError('Escribí el detalle antes de enviar.');
     setError('');
     setEnviando(true);
     try {
-      await createTicket({ categoria, mensaje: mensaje.trim(), nombre: nombre.trim(), adjuntos });
+      await createTicket({ titulo: titulo.trim(), categoria, mensaje: mensaje.trim(), nombre: nombre.trim(), adjuntos });
+      setTitulo('');
       setMensaje('');
       setAdjuntos([]);
       setEnviado(true);
@@ -160,6 +167,19 @@ export default function TicketWidget() {
                   value={nombre}
                   onChange={(e) => setNombre(e.target.value)}
                   placeholder="Nombre y apellido"
+                  style={{ width: '100%', padding: '9px 10px', borderRadius: 10, border: `1px solid ${T.border}`, background: T.surface, color: T.ink, fontSize: 13, boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 5, color: T.inkWeak }}>
+                  Título
+                </label>
+                <input
+                  value={titulo}
+                  onChange={(e) => setTitulo(e.target.value)}
+                  maxLength={MAX_TITULO}
+                  placeholder="Ej: No imprime el remito 4521"
                   style={{ width: '100%', padding: '9px 10px', borderRadius: 10, border: `1px solid ${T.border}`, background: T.surface, color: T.ink, fontSize: 13, boxSizing: 'border-box' }}
                 />
               </div>
@@ -279,7 +299,7 @@ export default function TicketWidget() {
 
               <button
                 type="submit"
-                disabled={enviando || !nombre.trim() || !mensaje.trim()}
+                disabled={enviando || !nombre.trim() || !titulo.trim() || !mensaje.trim()}
                 style={{
                   width: '100%', padding: '10px 12px', fontSize: 13, borderRadius: 10,
                   border: 'none', background: T.brand, color: '#fff', fontWeight: 700, cursor: 'pointer',

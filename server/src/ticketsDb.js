@@ -61,22 +61,25 @@ async function ensureTicketsSchema(pool) {
     CREATE INDEX IF NOT EXISTS idx_ticket_mensajes_ticket ON public.ticket_mensajes(ticket_id);
 
     ALTER TABLE public.tickets ADD COLUMN IF NOT EXISTS adjuntos JSONB NOT NULL DEFAULT '[]'::jsonb;
+    -- Título libre (migración tickets_titulo de planificación). Nullable: los
+    -- tickets viejos no tienen y se sigue mostrando la categoría.
+    ALTER TABLE public.tickets ADD COLUMN IF NOT EXISTS titulo TEXT;
   `);
   ensured = true;
 }
 
-export async function createTicket({ categoria, mensaje, rutaOrigen, creadoPorUsername, adjuntos }) {
+export async function createTicket({ titulo, categoria, mensaje, rutaOrigen, creadoPorUsername, adjuntos }) {
   const pool = getPool();
   if (!pool) throw new Error('SUPABASE_DATABASE_URL no configurado');
   await ensureTicketsSchema(pool);
 
   const { rows } = await pool.query(
     `
-    insert into public.tickets (categoria, mensaje, ruta_origen, creado_por_username, app_origen, adjuntos)
-    values ($1, $2, $3, $4, 'remitos', $5::jsonb)
+    insert into public.tickets (categoria, mensaje, ruta_origen, creado_por_username, app_origen, adjuntos, titulo)
+    values ($1, $2, $3, $4, 'remitos', $5::jsonb, $6)
     returning *;
     `,
-    [categoria, mensaje, rutaOrigen || null, creadoPorUsername || null, JSON.stringify(Array.isArray(adjuntos) ? adjuntos : [])]
+    [categoria, mensaje, rutaOrigen || null, creadoPorUsername || null, JSON.stringify(Array.isArray(adjuntos) ? adjuntos : []), titulo || null]
   );
   return rows[0];
 }
