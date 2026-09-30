@@ -973,6 +973,9 @@ router.post('/remitos/custom/pdf', async (req, res) => {
 // en el body (lo escribe a mano en el formulario). Se gestionan todos desde
 // /admin/tickets en planificación.
 const MAX_TICKET_ADJUNTOS = 5;
+// Largo máximo del título libre del ticket (el input del widget ya lo corta
+// con maxLength; acá se recorta porque la ruta es pública).
+const MAX_TICKET_TITULO = 120;
 // ~15MB de bytes crudos de adjuntos (igual al límite combinado del cliente,
 // ver ticketAttachment.js) codificado en base64 (~x1.34). Es una defensa de
 // segunda línea: el cliente ya valida esto antes de enviar, pero acá no hay
@@ -1002,11 +1005,15 @@ function normalizeTicketAdjuntos(raw) {
 
 router.post('/tickets', ticketsCreateLimiter, async (req, res) => {
   try {
+    const titulo = String(req.body?.titulo || '').trim().slice(0, MAX_TICKET_TITULO);
     const categoria = String(req.body?.categoria || '').trim();
     const mensaje = String(req.body?.mensaje || '').trim();
     const nombre = String(req.body?.nombre || '').trim();
     const rutaOrigen = req.body?.rutaOrigen ? String(req.body.rutaOrigen) : null;
     const adjuntos = normalizeTicketAdjuntos(req.body?.adjuntos);
+    // El widget nuevo ya no deja enviar sin título: este mensaje solo lo ve
+    // quien tiene abierta la versión vieja de la pantalla (sin el campo).
+    if (!titulo) return res.status(400).json({ error: 'Falta el título. Si no ves el campo "Título", recargá la página.' });
     if (!categoria) return res.status(400).json({ error: 'Falta la categoría' });
     if (!mensaje) return res.status(400).json({ error: 'Falta el mensaje' });
     if (!nombre) return res.status(400).json({ error: 'Falta tu nombre' });
@@ -1015,7 +1022,7 @@ router.post('/tickets', ticketsCreateLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Los adjuntos superan el tamaño total permitido.' });
     }
 
-    const ticket = await createTicket({ categoria, mensaje, rutaOrigen, creadoPorUsername: nombre, adjuntos });
+    const ticket = await createTicket({ titulo, categoria, mensaje, rutaOrigen, creadoPorUsername: nombre, adjuntos });
     return res.json({ ok: true, ticket });
   } catch (err) {
     console.error('POST /tickets error:', err);

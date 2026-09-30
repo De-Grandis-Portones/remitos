@@ -135,12 +135,12 @@ export function jsonUrlForRemito({ tipo, sucursal, numero, empresa }) {
   return withEmpresa(base, empresa);
 }
 
-export async function createTicket({ categoria, mensaje, nombre, adjuntos }) {
+export async function createTicket({ titulo, categoria, mensaje, nombre, adjuntos }) {
   const url = `${API_BASE}/api/tickets`;
   return httpJson(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ categoria, mensaje, nombre, rutaOrigen: 'remitos', adjuntos }),
+    body: JSON.stringify({ titulo, categoria, mensaje, nombre, rutaOrigen: 'remitos', adjuntos }),
   });
 }
 
