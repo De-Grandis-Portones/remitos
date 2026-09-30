@@ -14,6 +14,12 @@ function getPool() {
   return _pool;
 }
 
+// Compartido con db.js (copia del sistema anterior), para no abrir más
+// conexiones contra el pooler de Supabase (tope compartido con el resto de las apps).
+export function getSupabasePool() {
+  return getPool();
+}
+
 async function query(text, params = []) {
   const pool = getPool();
   if (!pool) throw new Error('SUPABASE_DATABASE_URL no configurado');
