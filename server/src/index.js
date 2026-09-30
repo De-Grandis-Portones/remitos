@@ -6,8 +6,6 @@ import { fileURLToPath } from 'url';
 import apiRoutes from './routes.js';
 import labelRoutes from './labelRoutes.js';
 
-// Load .env and OVERRIDE any existing OS env vars.
-// This prevents surprises if Windows has e.g. SQL_SERVER=localhost set globally.
 dotenv.config();
 
 const app = express();
@@ -72,14 +70,5 @@ if (serveClient) {
 
 app.listen(PORT, () => {
   console.log(`Remitos server listening on http://localhost:${PORT}`);
-  // Helpful startup diagnostics (no password printed)
-  console.log('DB config:', {
-    SQL_SERVER: process.env.SQL_SERVER,
-    SQL_PORT: process.env.SQL_PORT,
-    SQL_DATABASE: process.env.SQL_DATABASE,
-    SQL_USER: process.env.SQL_USER,
-    SQL_ENCRYPT: process.env.SQL_ENCRYPT,
-    SQL_TRUST_SERVER_CERT: process.env.SQL_TRUST_SERVER_CERT,
-    SQL_INSTANCE_NAME: process.env.SQL_INSTANCE_NAME
-  });
+  console.log('Datos del sistema anterior: copia en Supabase (legacy_sqlserver), empresa por defecto:', process.env.SQL_DATABASE || 'Portones');
 });
