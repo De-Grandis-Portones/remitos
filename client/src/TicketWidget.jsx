@@ -20,6 +20,7 @@ const TICKET_CATEGORIAS = [
   'Error / algo no funciona',
   'Solicitud de acceso o permiso',
   'Consulta sobre un pedido / NV',
+  'Sugerencias',
   'Otro',
 ];
 
